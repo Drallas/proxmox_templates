@@ -1,0 +1,8 @@
+- name: Clean up temporary files
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ image_dir }}/debian-12-generic-amd64-daily.raw.tar.gz"
+    - "{{ image_dir }}/debian-12-generic-amd64-daily.raw"
+  delegate_to: "{{ proxmox_host }}"

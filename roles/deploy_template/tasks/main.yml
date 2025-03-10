@@ -1,0 +1,127 @@
+- name: Ensure number of servers matches inventory expectations
+  ansible.builtin.assert:
+    that:
+      - servers | length > 0
+    fail_msg: "Geen servers gedefinieerd in 'servers'-variabele!"
+
+- name: Check if VM already exists
+  ansible.builtin.command:
+    cmd: qm list
+  delegate_to: "{{ proxmox_host }}"
+  register: vm_list
+  changed_when: false
+
+- name: Clone template for each server if not exists
+  ansible.builtin.command:
+    cmd: qm clone {{ vmid }} {{ base_clone_id + index }} --name {{ item.name }} --full --storage {{ storage }}
+  loop: "{{ servers }}"
+  loop_control:
+    index_var: index
+    pause: 2
+  delegate_to: "{{ proxmox_host }}"
+  register: vm_clone
+  when: "' ' ~ (base_clone_id + index) ~ ' ' not in vm_list.stdout"
+
+- name: Set MAC address and enable Guest Agent for each cloned VM
+  ansible.builtin.command:
+    cmd: qm set {{ base_clone_id + index }} --net0 virtio={{ item.mac }},bridge=vmbr0 --agent 1 --vga qxl --serial0 socket --ipconfig0 ip=dhcp
+  loop: "{{ servers }}"
+  loop_control:
+    index_var: index
+    pause: 2
+  delegate_to: "{{ proxmox_host }}"
+  when: vm_clone.results[index] is defined and vm_clone.results[index].changed
+
+- name: Start each cloned VM
+  ansible.builtin.command:
+    cmd: qm start {{ base_clone_id + index }}
+  loop: "{{ servers }}"
+  loop_control:
+    index_var: index
+    pause: 2
+  delegate_to: "{{ proxmox_host }}"
+  when: vm_clone.results[index] is defined and vm_clone.results[index].changed
+
+- name: Wait for VM boot
+  ansible.builtin.pause:
+    seconds: 30
+  when: vm_clone.changed
+
+- name: Check if VM is reachable via ping
+  ansible.builtin.command:
+    cmd: ping -c 5 {{ item.ip }}
+  loop: "{{ servers }}"
+  loop_control:
+    index_var: index
+  delegate_to: "{{ proxmox_host }}"
+  register: ping_result
+  retries: 5
+  delay: 5
+  until: ping_result.rc == 0
+  when: vm_clone.results[index] is defined and vm_clone.results[index].changed
+  failed_when: ping_result.rc != 0
+
+- name: Install qemu-guest-agent in each VM
+  ansible.builtin.apt:
+    name: qemu-guest-agent
+    state: present
+    update_cache: yes
+    force_apt_get: yes
+  become: true
+  loop: "{{ servers }}"
+  loop_control:
+    index_var: index
+  vars:
+    ansible_host: "{{ item.ip }}"
+    ansible_user: "debian"
+    ansible_ssh_private_key_file: "~/.ssh/id_ed25519"
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  register: apt_result
+  retries: 3
+  delay: 5
+  until: apt_result is success
+  when: vm_clone.results[index] is defined and vm_clone.results[index].changed and ping_result.results[index].rc == 0
+
+- name: Enable and start qemu-guest-agent service
+  ansible.builtin.service:
+    name: qemu-guest-agent
+    enabled: yes
+    state: started
+  become: true
+  loop: "{{ servers }}"
+  loop_control:
+    index_var: index
+  vars:
+    ansible_host: "{{ item.ip }}"
+    ansible_user: "debian"
+    ansible_ssh_private_key_file: "~/.ssh/id_ed25519"
+  when: vm_clone.results[index] is defined and vm_clone.results[index].changed and ping_result.results[index].rc == 0
+
+- name: Verify Guest Agent communication with Proxmox
+  ansible.builtin.command:
+    cmd: qm agent {{ base_clone_id + index }} ping
+  loop: "{{ servers }}"
+  loop_control:
+    index_var: index
+  delegate_to: "{{ proxmox_host }}"
+  register: agent_ping
+  retries: 5
+  delay: 5
+  until: agent_ping.rc == 0
+  when: vm_clone.results[index] is defined and vm_clone.results[index].changed
+  failed_when: agent_ping.rc != 0
+
+- name: Collect successful VMs
+  ansible.builtin.set_fact:
+    successful_vms: "{{ successful_vms | default([]) + [{'name': item.name, 'id': base_clone_id + index, 'ip': item.ip, 'mac': item.mac}] }}"
+  loop: "{{ servers }}"
+  loop_control:
+    index_var: index
+  when: vm_clone.results[index] is defined and vm_clone.results[index].changed and ping_result.results[index].rc == 0 and apt_result.results[index].changed and agent_ping.results[index].rc == 0
+
+- name: Display successful installations
+  ansible.builtin.debug:
+    var: successful_vms
+    verbosity: 0
+  when: successful_vms is defined and successful_vms | length > 0

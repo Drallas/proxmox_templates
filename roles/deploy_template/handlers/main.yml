@@ -1,0 +1,4 @@
+- name: Pong message
+  ansible.builtin.debug:
+    msg: "Ping OK for {{ item.item.name }} at {{ vm_ips[item.item.name] }}"
+  listen: Pong message

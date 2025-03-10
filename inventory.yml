@@ -1,0 +1,6 @@
+all:
+  hosts:
+    proxmox:
+      ansible_host: 192.168.1.11 # Jouw Proxmox IP
+      ansible_user: root # Root-gebruiker voor SSH
+      ansible_ssh_private_key_file: ~/.ssh/id_ed25519 # Pad naar je private key

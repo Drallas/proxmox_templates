@@ -1,0 +1,106 @@
+- name: Ensure image directory exists
+  ansible.builtin.file:
+    path: "{{ image_dir }}"
+    state: directory
+    mode: '0755'
+  delegate_to: "{{ proxmox_host }}"
+
+- name: Ensure key directory exists
+  ansible.builtin.file:
+    path: "{{ key_dir }}"
+    state: directory
+    mode: '0755'
+  delegate_to: "{{ proxmox_host }}"
+
+- name: Check if local Debian image exists and get its stats
+  ansible.builtin.stat:
+    path: "{{ image_dir }}/debian-12-generic-amd64.tar.xz"
+  delegate_to: "{{ proxmox_host }}"
+  register: local_image_stat
+
+- name: Get remote image metadata (head request)
+  ansible.builtin.uri:
+    url: "{{ debian_image_url }}"
+    method: HEAD
+    return_content: no
+  register: remote_image_meta
+  delegate_to: localhost
+
+- name: Convert remote Last-Modified to Unix timestamp
+  ansible.builtin.set_fact:
+    remote_mtime: "{{ ((remote_image_meta.last_modified | default('1970-01-01 00:00:00 GMT')) | to_datetime('%a, %d %b %Y %H:%M:%S GMT') | int) | float }}"
+  when: remote_image_meta.last_modified is defined
+
+- name: Download latest Debian cloud image if newer
+  ansible.builtin.get_url:
+    url: "{{ debian_image_url }}"
+    dest: "{{ image_dir }}/debian-12-generic-amd64.tar.xz"
+    mode: '0644'
+    force: "{{ not local_image_stat.stat.exists or (remote_mtime is defined and remote_mtime | float > local_image_stat.stat.mtime | default(0) | float) }}"
+  delegate_to: "{{ proxmox_host }}"
+  register: download_result
+
+- name: Extract the raw image
+  ansible.builtin.unarchive:
+    src: "{{ image_dir }}/debian-12-generic-amd64.tar.xz"
+    dest: "{{ image_dir }}"
+    remote_src: yes
+  delegate_to: "{{ proxmox_host }}"
+  when: download_result.changed
+
+- name: Create Proxmox VM
+  ansible.builtin.command:
+    cmd: qm create {{ vmid }} --memory {{ memory }} --cores {{ cores }} --name "{{ template_name }}" --net0 virtio,bridge=vmbr0 --ostype l26
+  delegate_to: "{{ proxmox_host }}"
+  register: vm_create
+  changed_when: vm_create.rc == 0
+
+- name: Import raw disk to Proxmox
+  ansible.builtin.command:
+    cmd: qm disk import {{ vmid }} {{ image_dir }}/disk.raw {{ storage }} --format raw
+  delegate_to: "{{ proxmox_host }}"
+  when: vm_create.changed or download_result.changed
+
+- name: Attach disk to VM
+  ansible.builtin.command:
+    cmd: qm set {{ vmid }} --scsihw virtio-scsi-pci --scsi0 {{ storage }}:{{ vmid }}/vm-{{ vmid }}-disk-0.raw
+  delegate_to: "{{ proxmox_host }}"
+  when: vm_create.changed
+
+- name: Resize disk to 20GB
+  ansible.builtin.command:
+    cmd: qm resize {{ vmid }} scsi0 +18228M
+  delegate_to: "{{ proxmox_host }}"
+  when: vm_create.changed
+
+- name: Configure VM settings with standard Cloud-Init
+  ansible.builtin.command:
+    cmd: "{{ item }}"
+  loop:
+    - qm set {{ vmid }} --ipconfig0 ip=dhcp
+    - qm set {{ vmid }} --ide2 {{ storage }}:cloudinit,format=raw  # Standaard Cloud-Init als raw
+    - qm set {{ vmid }} --agent 1
+    - qm set {{ vmid }} --boot order=scsi0
+    - qm set {{ vmid }} --serial0 socket --vga serial0
+  delegate_to: "{{ proxmox_host }}"
+  when: vm_create.changed
+
+- name: Create SSH key file
+  ansible.builtin.copy:
+    content: "{{ ssh_keys | join('\n') }}"
+    dest: "{{ key_dir }}/sshkey.pub"
+    mode: '0644'
+  delegate_to: "{{ proxmox_host }}"
+
+- name: Add SSH keys to VM
+  ansible.builtin.command:
+    cmd: qm set {{ vmid }} --sshkeys {{ key_dir }}/sshkey.pub
+  delegate_to: "{{ proxmox_host }}"
+  when: vm_create.changed
+
+- name: Convert VM to template
+  ansible.builtin.command:
+    cmd: qm template {{ vmid }}
+  delegate_to: "{{ proxmox_host }}"
+  when: vm_create.changed
+  notify: Clean up temporary files

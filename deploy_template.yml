@@ -1,0 +1,6 @@
+- name: Deploy Proxmox Template as VMs
+  hosts: proxmox
+  vars_files:
+    - group_vars/all.yml
+  roles:
+    - deploy_template

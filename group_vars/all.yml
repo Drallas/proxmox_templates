@@ -1,0 +1,22 @@
+proxmox_host: "proxmox"
+storage: "local"  # Blijft local, maar image is raw voor Ceph-compatibiliteit
+vmid: 9000
+template_name: "debian-cloud-template"
+memory: 4096
+cores: 2
+image_dir: "/var/lib/proxmox/templates/images"
+key_dir: "/var/lib/proxmox/templates/keys"
+debian_image_url: "https://cloud.debian.org/images/cloud/bookworm/daily/latest/debian-12-generic-amd64-daily.tar.xz"
+ssh_keys:
+  - "{{ lookup('file', 'files/ssh_keys.pub') }}"
+base_clone_id: 105
+servers:
+  - name: "dswarm01"
+    mac: "BC:24:11:85:68:0C"
+    ip: "192.168.1.111"
+  - name: "dswarm02"
+    mac: "BC:24:11:38:39:D6"
+    ip: "192.168.1.112"
+  - name: "dswarm03"
+    mac: "BC:24:11:BB:19:A5"
+    ip: "192.168.1.113"

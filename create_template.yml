@@ -1,0 +1,6 @@
+- name: Create Proxmox Debian Cloud Template
+  hosts: localhost
+  vars_files:
+    - group_vars/all.yml
+  roles:
+    - create_template
