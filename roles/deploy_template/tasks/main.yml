@@ -61,6 +61,18 @@
   when: vm_clone.results[index] is defined and vm_clone.results[index].changed
   failed_when: ping_result.rc != 0
 
+- name: Set timezone to Europe/Amsterdam
+  ansible.builtin.command: timedatectl set-timezone Europe/Amsterdam
+  become: true
+  loop: "{{ servers }}"
+  loop_control:
+    index_var: index
+  vars:
+    ansible_host: "{{ item.ip }}"
+    ansible_user: "debian"
+    ansible_ssh_private_key_file: "~/.ssh/id_ed25519"
+  when: vm_clone.results[index] is defined and vm_clone.results[index].changed and ping_result.results[index].rc == 0
+
 - name: Install qemu-guest-agent in each VM
   ansible.builtin.apt:
     name: qemu-guest-agent
